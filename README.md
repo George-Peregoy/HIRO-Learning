@@ -3,7 +3,7 @@ A personal repository to learn [Data-Efficient Hierarchical Reinforcment Learnin
 
 ## Algorithm
 
-The Data-Efficient Hierarchical Reinforcment Learning (HIRO) algorithm uses two agents. A higher level agent which observes states and calculates goals and a lower level agent which recieves the states and goals and outputs an action. The algorithm is off-policy with a respective replay buffer for each agent. As per the paper each agent uses the TD3 algorithm. To enable off-policy training of the higher level agent, selecting from candidate goals the one most likely to have produced the same low-level actions under the current low-level policy.
+The Data-Efficient Hierarchical Reinforcment Learning (HIRO) algorithm uses two agents. A higher level agent which observes states and calculates goals and a lower level agent which recieves the states and goals and outputs an action. The algorithm is off-policy with a respective replay buffer for each agent. As per the paper each agent uses the [TD3](https://spinningup.openai.com/en/latest/algorithms/td3.html) algorithm. To enable off-policy training of the higher level agent, selecting from candidate goals the one most likely to have produced the same low-level actions under the current low-level policy.
 
 ## Requirements
 
@@ -67,10 +67,40 @@ hiro_learning/
 
 To train agent run  `python3 train.py`.
 
-## Environment Details
+## TD3
 
-The agent was trained on AntMaze_UMazeDense-v5. The environment uses a dict for observations with three keys `observation`, `achieved_goal`, and `desired_goal`. By default the environment stores x and y positions in `achieved_goal` the remaining ant state is stored in `observation` (joint angles, velocities, orientation) which must be concatenated together to form the full state used in training.
+Since the HIRO agent uses two layers of TD3 agents, the TD3 algorithm was tested separately on [Hopper-v5](https://gymnasium.farama.org/environments/mujoco/hopper/), [HalfCheetah-v5](https://gymnasium.farama.org/environments/mujoco/half_cheetah/), and [Ant-v5](https://gymnasium.farama.org/environments/mujoco/ant/).
 
-## Results
+### Hopper 
 
-The agent was trained for 5 million steps on both sparse and dense AntMaze UMaze environments. The highest observed success rate over a 100-episode window was 0.04. No meaningful convergence was observed.
+#### Training Curve
+![training curve](plots/td3/hopper.png)
+
+#### Result
+![gif](videos/td3/Hopper-v5_950000.gif)
+
+### HalfCheetah
+
+#### Training Curve
+![training curve](plots/td3/cheetah.png)
+
+#### Result
+![gif](videos/td3/HalfCheetah-v5_2000000.gif)
+
+### Ant
+
+#### Training Curve
+![training curve](plots/td3/ant.png)
+
+#### Result
+![gif](videos/td3/Ant-v5_2000000.gif)
+
+## HIRO
+
+### Environment Details
+
+The agent was trained on [AntMaze_UMazeDense-v5](https://robotics.farama.org/envs/maze/ant_maze/). The environment uses a dict for observations with three keys `observation`, `achieved_goal`, and `desired_goal`. By default the environment stores x and y positions in `achieved_goal` the remaining ant state is stored in `observation` (joint angles, velocities, orientation) which must be concatenated together to form the full state used in training.
+
+### Results
+
+The agent was trained for 5 million steps on both sparse and dense AntMaze UMaze environments. The highest observed success rate over a 100-episode window was 0.04. No meaningful convergence was observed. Due to the success of TD3 by itself, the main error must come from the HIRO section however due to the long run time results will be taken as is.

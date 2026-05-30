@@ -1,7 +1,7 @@
 import torch 
 import torch.nn as nn
 import os
-from src.buffer import ManagerBuffer, WorkerBuffer
+from src.buffer import ManagerBuffer, WorkerBuffer, ReplayBuffer
 from src.network import Network
 from src.utils import get_state_dim
 
@@ -19,7 +19,7 @@ class Agent:
         self.worker = Worker(env, goal_dim)
         self.manager = Manager(env, goal_dim)
 
-    def save(self, path: str = "checkpoints/hiro.pt"):
+    def save(self, path: str = "checkpoints/hiro/hiro.pt"):
         os.makedirs(os.path.dirname(path), exist_ok=True)
         torch.save({
             # worker
@@ -39,7 +39,7 @@ class Agent:
         }, path)
         print(f"Saved to {path}\n")
 
-    def load(self, path: str = "checkpoints/hiro.pt"):
+    def load(self, path: str = "checkpoints/hiro/hiro.pt"):
         checkpoint = torch.load(path, map_location=self.device)
 
         # worker
@@ -80,7 +80,7 @@ class Manager:
         self.gamma = 0.99
         self.tau = 0.005
         self.batch_size = 256
-        self.sigma = 1
+        self.sigma = 0.3
         self.c = 10
         self.reward_scale = 0.1
 
@@ -255,8 +255,8 @@ class Worker:
         self.goal_dim = goal_dim
         self.gamma = 0.99
         self.tau = 0.005
-        self.batch_size = 256 # didn't see in paper -> defaulting to 256
-        self.sigma = 1
+        self.batch_size = 256 
+        self.sigma = 0.1
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.device.type == "cuda":
@@ -393,3 +393,163 @@ class Worker:
             target_param.data.copy_(self.tau * live_param.data + (1 - self.tau) * target_param.data)
         for target_param, live_param in zip(self.critic_target_2.parameters(), self.critic_live_2.parameters()):
             target_param.data.copy_(self.tau * live_param.data + (1 - self.tau) * target_param.data)
+
+class AgentTD3:
+
+    def __init__(self, env):
+        self.env = env
+        self.state_dim = get_state_dim(env)
+        self.action_dim = env.action_space.shape[0]
+        self.gamma = 0.99
+        self.tau = 0.005
+        self.batch_size = 256
+        self.sigma = 0.1
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            print(f"MOVING AGENT TO CUDA")
+
+            # define policy networks
+        self.actor_live = Network(
+            layer_sizes=[self.state_dim, 300, 300, self.action_dim],
+            lr = 1e-4,
+            output_activation=nn.Tanh
+        )
+
+        self.critic_live_1 = Network(
+            layer_sizes=[self.state_dim + self.action_dim, 300, 300, 1],
+            lr = 1e-3,
+        )
+        
+        self.critic_live_2 = Network(
+            layer_sizes=[self.state_dim + self.action_dim, 300, 300, 1],
+            lr = 1e-3,
+        )
+
+        # define target networks
+        self.actor_target = Network(
+            layer_sizes=[self.state_dim, 300, 300, self.action_dim],
+            lr = 1e-4,
+            output_activation=nn.Tanh
+        )
+
+        self.critic_target_1 = Network(
+            layer_sizes=[self.state_dim + self.action_dim, 300, 300, 1],
+            lr = 1e-3,
+        )
+        
+        self.critic_target_2 = Network(
+            layer_sizes=[self.state_dim + self.action_dim, 300, 300, 1],
+            lr = 1e-3,
+        )
+
+        self.actor_target.load_state_dict(self.actor_live.state_dict())
+        self.critic_target_1.load_state_dict(self.critic_live_1.state_dict())
+        self.critic_target_2.load_state_dict(self.critic_live_2.state_dict())
+
+        # init buffer 
+        self.buffer = ReplayBuffer(state_dim=self.state_dim, action_dim=self.action_dim, device=self.device)
+
+        # move to device 
+        self.actor_live.to(self.device)
+        self.critic_live_1.to(self.device)
+        self.critic_live_2.to(self.device)
+        self.actor_target.to(self.device)
+        self.critic_target_1.to(self.device)
+        self.critic_target_2.to(self.device)
+
+        self.policy_delay = 2
+        self.update_count = 0 
+        self.policy_noise = 0.2
+        self.noise_clip = 0.5
+
+    def choose_action(self, state, training: bool = True):
+
+        if not isinstance(state, torch.Tensor):
+            state = torch.tensor(state, dtype=torch.float32).to(self.device)
+
+        with torch.no_grad():
+
+            action = self.actor_live(state)
+
+            if training:
+                action += torch.randn_like(action) * self.sigma
+            
+            action = torch.clamp(action, -1, 1)
+        
+        return action
+
+    def update(self):
+        
+        if self.buffer.max_idx < self.batch_size:
+            return
+        
+        states, actions, rewards, next_states, dones = self.buffer.get(self.batch_size)
+
+        new_actions = self.actor_live(states)
+        next_target_actions = self.actor_target(next_states)
+        noise = torch.randn_like(next_target_actions) * self.policy_noise
+        noise = noise.clamp(-self.noise_clip, self.noise_clip)
+        next_target_actions = (next_target_actions + noise).clamp(-1, 1)
+
+        Q1_target = self.critic_target_1(torch.cat([next_states, next_target_actions], dim=-1))
+        Q2_target = self.critic_target_2(torch.cat([next_states, next_target_actions], dim=-1))
+
+        y = (rewards + self.gamma * (1 - dones) * torch.minimum(Q1_target, Q2_target)).detach()
+
+        q1 = self.critic_live_1(torch.cat([states, actions], dim=-1))
+        q2 = self.critic_live_2(torch.cat([states, actions], dim=-1))
+
+        critic_loss_1 = nn.functional.mse_loss(q1, y)
+        critic_loss_2 = nn.functional.mse_loss(q2, y)
+
+        self.update_count += 1
+
+        self.critic_live_1.update(loss=critic_loss_1)
+        self.critic_live_2.update(loss=critic_loss_2)
+
+        if self.update_count % self.policy_delay == 0:
+            for p in self.critic_live_1.parameters():
+                p.requires_grad = False
+            for p in self.critic_live_2.parameters():
+                p.requires_grad = False
+
+            actor_loss = self.critic_live_1(torch.cat([states, new_actions], dim=-1)).mean()
+
+            for p in self.critic_live_1.parameters():
+                p.requires_grad = True
+            for p in self.critic_live_2.parameters():
+                p.requires_grad = True
+
+            self.actor_live.update(loss=-actor_loss)
+
+            for target_param, live_param in zip(self.actor_target.parameters(), self.actor_live.parameters()):
+                target_param.data.copy_(self.tau * live_param.data + (1 - self.tau) * target_param.data)
+
+        for target_param, live_param in zip(self.critic_target_1.parameters(), self.critic_live_1.parameters()):
+            target_param.data.copy_(self.tau * live_param.data + (1 - self.tau) * target_param.data)
+        for target_param, live_param in zip(self.critic_target_2.parameters(), self.critic_live_2.parameters()):
+            target_param.data.copy_(self.tau * live_param.data + (1 - self.tau) * target_param.data)
+
+    def save(self, path: str = "checkpoints/td3/td3.pt"):
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            torch.save({
+                'actor_live': self.actor_live.state_dict(),
+                'actor_target': self.actor_target.state_dict(),
+                'critic_live_1': self.critic_live_1.state_dict(),
+                'critic_live_2': self.critic_live_2.state_dict(),
+                'critic_target_1': self.critic_target_1.state_dict(),
+                'critic_target_2': self.critic_target_2.state_dict(),
+            }, path)
+            print(f"Saved to {path}\n")
+
+    def load(self, path: str = "checkpoints/td3/td3.pt"):
+        checkpoint = torch.load(path, map_location=self.device)
+
+        self.actor_live.load_state_dict(checkpoint['actor_live'])
+        self.actor_target.load_state_dict(checkpoint['actor_target'])
+        self.critic_live_1.load_state_dict(checkpoint['critic_live_1'])
+        self.critic_live_2.load_state_dict(checkpoint['critic_live_2'])
+        self.critic_target_1.load_state_dict(checkpoint['critic_target_1'])
+        self.critic_target_2.load_state_dict(checkpoint['critic_target_2'])
+        print(f"Loaded from {path}\n")

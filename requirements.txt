@@ -5,3 +5,4 @@ matplotlib==3.10.8
 moviepy==2.2.1
 imageio-ffmpeg==0.6.0
 gymnasium-robotics==1.4.2
+ipykernel==7.2.0
